@@ -257,7 +257,8 @@ sandbox_start_script() {
         -e "s|https://api\.cylo\.[a-z]*|http://127.0.0.1:${port}|g" \
         -e 's|chown -R mysql:mysql .*|true|' \
         -e 's#^remove_default_test_account || true$#true#' \
-        -e 's|^exec mariadbd --user=mysql --console$|exec "$@"|' \
+        -e "s|=/ssl/|=${work}/ssl/|g" \
+        -e 's|^exec mariadbd --user=mysql --console "${TLS_ARGS\[@\]}"$|exec "$@"|' \
         "${repo_root}/scripts/run.sh" >"$1"
 }
 
