@@ -367,4 +367,54 @@ if [ -f /etc/appbox_callback_pending ]; then
 	) </dev/null &
 fi
 
-exec mariadbd --user=mysql --console
+# ============================================================
+# TLS certificate
+#
+# Appbox mounts the Let's Encrypt certificate for the instance's domain
+# read-only at /ssl/cert.pem (certificate and chain) and /ssl/key.pem: the
+# Cylo's wildcard certificate, or a custom domain's own. MariaDB serves it
+# when both files are there, the mysql user can read them and the key
+# belongs to the certificate, so clients can verify the server against the
+# system trust store and the instance's hostname. Otherwise MariaDB makes
+# its own self-signed certificate at each start, as before. TLS stays
+# optional for clients either way.
+#
+# MariaDB reads the files only when it starts. Appbox restarts the app once
+# the certificate it mounts has been renewed.
+# ============================================================
+TLS_CERT=/ssl/cert.pem
+TLS_KEY=/ssl/key.pem
+TLS_ARGS=()
+
+mounted_tls_certificate_usable() {
+	local cert_pubkey key_pubkey
+
+	if [ ! -f "$TLS_CERT" ] || [ ! -f "$TLS_KEY" ]; then
+		echo "[!] /ssl does not hold both cert.pem and key.pem as files; using a self-signed TLS certificate"
+		return 1
+	fi
+	if ! setpriv --reuid=mysql --regid=mysql --clear-groups -- \
+		sh -c 'test -r "$1" && test -r "$2"' sh "$TLS_CERT" "$TLS_KEY"; then
+		echo "[!] MariaDB cannot read the TLS certificate or key in /ssl; using a self-signed TLS certificate"
+		return 1
+	fi
+	cert_pubkey=$(openssl x509 -in "$TLS_CERT" -noout -pubkey 2>/dev/null) || cert_pubkey=""
+	key_pubkey=$(openssl pkey -in "$TLS_KEY" -pubout 2>/dev/null) || key_pubkey=""
+	if [ -z "$cert_pubkey" ] || [ "$cert_pubkey" != "$key_pubkey" ]; then
+		echo "[!] The TLS certificate and key in /ssl cannot be read or do not match; using a self-signed TLS certificate"
+		return 1
+	fi
+	if ! openssl x509 -in "$TLS_CERT" -noout -checkend 0 >/dev/null 2>&1; then
+		echo "[!] The TLS certificate in /ssl has expired; serving it until it is renewed"
+	fi
+	return 0
+}
+
+if [ -e "$TLS_CERT" ] || [ -e "$TLS_KEY" ]; then
+	if mounted_tls_certificate_usable; then
+		TLS_ARGS=(--ssl-cert="$TLS_CERT" --ssl-key="$TLS_KEY")
+		echo "[i] Serving the TLS certificate from /ssl ($(openssl x509 -in "$TLS_CERT" -noout -subject -enddate 2>/dev/null | tr '\n' ' ' | sed 's/ $//'))"
+	fi
+fi
+
+exec mariadbd --user=mysql --console "${TLS_ARGS[@]}"
